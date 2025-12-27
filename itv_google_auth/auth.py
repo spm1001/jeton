@@ -329,14 +329,15 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
                 # Use post-auth page if configured, otherwise simple success
                 post_auth = getattr(self.server, "post_auth", None)
                 if post_auth:
-                    html = POST_AUTH_HTML.format(
-                        copy_value=post_auth.get("copy_value", ""),
-                        copy_label=post_auth.get("copy_label", "Value"),
-                        message=post_auth.get("message", ""),
-                        button_url=post_auth.get("button_url", "#"),
-                        button_label=post_auth.get("button_label", "Continue"),
+                    import html
+                    html_content = POST_AUTH_HTML.format(
+                        copy_value=html.escape(str(post_auth.get("copy_value", ""))),
+                        copy_label=html.escape(str(post_auth.get("copy_label", "Value"))),
+                        message=html.escape(str(post_auth.get("message", ""))),
+                        button_url=html.escape(str(post_auth.get("button_url", "#"))),
+                        button_label=html.escape(str(post_auth.get("button_label", "Continue"))),
                     )
-                    self.wfile.write(html.encode())
+                    self.wfile.write(html_content.encode())
                 else:
                     self.wfile.write(SUCCESS_HTML.encode())
 
