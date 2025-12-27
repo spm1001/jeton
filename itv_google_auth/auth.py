@@ -18,7 +18,7 @@ import sys
 import time
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
@@ -91,7 +91,7 @@ class TokenStatus:
         """Time until token expires, or None if unknown/expired."""
         if self.expires_at is None:
             return None
-        delta = self.expires_at - datetime.utcnow()
+        delta = self.expires_at - datetime.now(timezone.utc)
         return delta if delta.total_seconds() > 0 else None
 
     @classmethod
@@ -138,7 +138,7 @@ class TokenStatus:
             except (ValueError, TypeError):
                 pass
 
-        expired = expires_at is not None and expires_at < datetime.utcnow()
+        expired = expires_at is not None and expires_at < datetime.now(timezone.utc)
         can_refresh = bool(token_data.get("refresh_token"))
         scopes = token_data.get("scopes", [])
 
