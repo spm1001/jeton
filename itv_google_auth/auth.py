@@ -28,7 +28,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
-from itv_google_auth.callback import ERROR_HTML, NO_CODE_HTML, SUCCESS_HTML
+from itv_google_auth.callback import ERROR_HTML, NO_CODE_HTML, POST_AUTH_HTML, SUCCESS_HTML
 
 # Scope shortcuts for convenience
 SCOPE_SHORTCUTS = {
@@ -217,6 +217,7 @@ def authenticate(
     manual_mode: bool = False,
     code: str | None = None,
     port: int = 3000,
+    post_auth: dict | None = None,
 ) -> Credentials:
     """Run OAuth flow and save resulting token.
 
@@ -227,6 +228,12 @@ def authenticate(
         manual_mode: If True, user pastes redirect URL instead of localhost server
         code: Pre-provided auth code or redirect URL (for non-interactive use)
         port: Port for localhost callback server (default 3000)
+        post_auth: Optional dict for post-auth action screen. Keys:
+            - copy_value: Value to display for copying
+            - copy_label: Label for the copy value (e.g., "GCP Project Number")
+            - message: Instructions to show the user
+            - button_url: URL the button opens
+            - button_label: Button text (e.g., "Open Settings →")
 
     Returns:
         Valid Credentials object
@@ -271,9 +278,9 @@ def authenticate(
     print()
 
     if manual_mode or code:
-        auth_code = _manual_flow(auth_url, code)
+        auth_code = _manual_flow(auth_url, code, post_auth)
     else:
-        auth_code = _auto_flow(auth_url, port)
+        auth_code = _auto_flow(auth_url, port, post_auth)
 
     # Exchange code for tokens (with scope mismatch handling)
     creds = _exchange_code(flow, auth_code)
@@ -318,7 +325,21 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(SUCCESS_HTML.encode())
+
+                # Use post-auth page if configured, otherwise simple success
+                post_auth = getattr(self.server, "post_auth", None)
+                if post_auth:
+                    html = POST_AUTH_HTML.format(
+                        copy_value=post_auth.get("copy_value", ""),
+                        copy_label=post_auth.get("copy_label", "Value"),
+                        message=post_auth.get("message", ""),
+                        button_url=post_auth.get("button_url", "#"),
+                        button_label=post_auth.get("button_label", "Continue"),
+                    )
+                    self.wfile.write(html.encode())
+                else:
+                    self.wfile.write(SUCCESS_HTML.encode())
+
                 self.server.auth_code = code
                 return
 
@@ -334,7 +355,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not Found")
 
 
-def _auto_flow(auth_url: str, port: int) -> str:
+def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
     """Auto server mode: localhost receives callback automatically."""
     print("Auto Server Mode (Local Development)")
     print("=" * 50)
@@ -358,6 +379,7 @@ def _auto_flow(auth_url: str, port: int) -> str:
     server = HTTPServer(("localhost", port), _OAuthCallbackHandler)
     server.auth_code = None
     server.auth_error = None
+    server.post_auth = post_auth
 
     def run_server():
         while server.auth_code is None and server.auth_error is None:
@@ -381,7 +403,7 @@ def _auto_flow(auth_url: str, port: int) -> str:
     return server.auth_code
 
 
-def _manual_flow(auth_url: str, code_arg: str | None = None) -> str:
+def _manual_flow(auth_url: str, code_arg: str | None = None, post_auth: dict | None = None) -> str:
     """Manual mode: user copies redirect URL and pastes."""
     print("Manual Code Mode (Remote/SSH Development)")
     print("=" * 50)
@@ -412,6 +434,17 @@ def _manual_flow(auth_url: str, code_arg: str | None = None) -> str:
 
     if not code:
         raise ValueError("Could not extract authorization code from input")
+
+    # Show post-auth info in terminal for manual mode
+    if post_auth:
+        print()
+        print("=" * 50)
+        print(f"{post_auth.get('copy_label', 'Value')}: {post_auth.get('copy_value', '')}")
+        print()
+        print(post_auth.get("message", ""))
+        print()
+        print(f"Open: {post_auth.get('button_url', '')}")
+        print("=" * 50)
 
     return code
 
