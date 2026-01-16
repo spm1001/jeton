@@ -135,6 +135,9 @@ class TokenStatus:
         if token_data.get("expiry"):
             try:
                 expires_at = datetime.fromisoformat(token_data["expiry"].replace("Z", "+00:00"))
+                # Ensure timezone-aware (old tokens may be naive)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
                 pass
 
