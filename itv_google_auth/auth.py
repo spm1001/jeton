@@ -5,9 +5,6 @@ Modes:
 1. Auto (default): localhost server, auto-opens browser
 2. Manual (--manual): paste redirect URL
 3. Non-interactive (--manual --code URL): for scripting/Claude Code
-
-Based on patterns from infra-mcp-workspace and itv-mit-team-meeting-workflow,
-with scope mismatch handling from xmas-nice-things.
 """
 
 from __future__ import annotations

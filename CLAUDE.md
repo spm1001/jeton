@@ -5,8 +5,8 @@ This file provides guidance to Claude Code when working with this repository.
 ## Project Purpose
 
 Shared Google OAuth library for ITV tooling. Provides consistent authentication across:
-- Python projects (direct API use, e.g., infra-mcp-workspace)
-- Node.js projects (via CLI → token.json, e.g., itv-slides-formatter)
+- Python projects (direct API use, e.g., mcp-google-workspace)
+- Node.js/Apps Script projects (via CLI → token.json, e.g., itv-slides-formatter)
 
 ## Architecture
 
@@ -107,9 +107,9 @@ if creds is None:
 
 ## Related Projects
 
-- **infra-mcp-workspace**: Primary Python consumer (direct API access)
-- **itv-slides-formatter**: Primary Node.js consumer (Apps Script deployment)
-- **itv-appscript-deploy** (future): Apps Script deployment tool using this library
+- **mcp-google-workspace**: Primary Python consumer (MCP tools for Claude)
+- **itv-appscript-deploy**: Apps Script deployment CLI (uses this library directly)
+- **itv-slides-formatter**: Apps Script project (uses itv-appscript-deploy for auth/deploy)
 
 ## Security
 
