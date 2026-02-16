@@ -1,4 +1,4 @@
-"""CLI for itv-google-auth."""
+"""CLI for jeton."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from itv_google_auth.auth import (
+from jeton.auth import (
     SCOPE_SHORTCUTS,
     TokenStatus,
     authenticate,
@@ -53,15 +53,15 @@ from itv_google_auth.auth import (
 )
 @click.pass_context
 def main(ctx, credentials, token, scopes, manual, code, port):
-    """Google OAuth authentication for ITV tooling.
+    """Google OAuth authentication for Batterie de Savoir.
 
     Run without subcommand to authenticate:
 
-        itv-auth --credentials ./credentials.json --scopes drive.readonly
+        jeton --credentials ./credentials.json --scopes drive.readonly
 
     Or check token status:
 
-        itv-auth status --token ./token.json
+        jeton status --token ./token.json
 
     \b
     Available scope shortcuts:
@@ -80,8 +80,8 @@ def main(ctx, credentials, token, scopes, manual, code, port):
         # Require scopes for auth
         if not scopes:
             click.echo("Error: --scopes required for authentication", err=True)
-            click.echo("Example: itv-auth --scopes drive.readonly gmail.readonly", err=True)
-            click.echo("\nUse 'itv-auth --help' for available scope shortcuts", err=True)
+            click.echo("Example: jeton --scopes drive.readonly gmail.readonly", err=True)
+            click.echo("\nUse 'jeton --help' for available scope shortcuts", err=True)
             sys.exit(1)
 
         try:
@@ -124,7 +124,7 @@ def status(token, credentials):
     if not token_status.exists:
         click.echo(f"Token: {token}")
         click.echo("Status: NOT FOUND")
-        click.echo("\nRun 'itv-auth --scopes ...' to authenticate")
+        click.echo("\nRun 'jeton --scopes ...' to authenticate")
         sys.exit(1)
 
     click.echo(f"Token: {token}")
@@ -192,7 +192,7 @@ def refresh(token, credentials):
 
     if creds is None:
         click.echo("Error: Could not load or refresh token", err=True)
-        click.echo("Run 'itv-auth --scopes ...' to re-authenticate", err=True)
+        click.echo("Run 'jeton --scopes ...' to re-authenticate", err=True)
         sys.exit(1)
 
     click.echo(f"Token refreshed: {token}")

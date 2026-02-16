@@ -1,11 +1,11 @@
-"""Tests for itv_google_auth.auth module."""
+"""Tests for jeton.auth module."""
 
 import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from itv_google_auth.auth import (
+from jeton.auth import (
     SCOPE_SHORTCUTS,
     TokenStatus,
     _parse_code_from_input,

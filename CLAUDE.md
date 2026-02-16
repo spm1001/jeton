@@ -4,18 +4,20 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Purpose
 
-Shared Google OAuth library for ITV tooling. Provides consistent authentication across:
-- Python projects (direct API use, e.g., mcp-google-workspace)
-- Node.js/Apps Script projects (via CLI → token.json, e.g., itv-slides-formatter)
+Jeton is the Google OAuth library for [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir) — a kitchen-metaphor toolkit for knowledge work. Jeton handles the tokens exchanged between front-of-house (the user) and kitchen (Google APIs).
+
+Provides consistent authentication across:
+- Python projects (direct API use, e.g., mise-en-space)
+- Node.js/Apps Script projects (via CLI → token.json)
 
 ## Architecture
 
 ```
-itv_google_auth/
+jeton/
 ├── __init__.py     # Public API exports
 ├── auth.py         # Core: authenticate(), load_credentials(), TokenStatus
 ├── callback.py     # HTML templates for OAuth callback pages
-└── cli.py          # Click CLI: itv-auth command
+└── cli.py          # Click CLI: jeton command
 ```
 
 ## Key Design Decisions
@@ -27,7 +29,7 @@ Each project provides its own:
 - `token.json` (output location)
 - Scopes (only what that project needs)
 
-No magic defaults like `~/.config/itv-tools/`. Keeps projects independent.
+No magic defaults like `~/.config/jeton/`. Keeps projects independent.
 
 ### Scope Shortcuts
 
@@ -55,11 +57,11 @@ Google sometimes grants different scopes than requested (incremental auth). The 
 # Development
 uv sync                          # Install dependencies
 uv run pytest                    # Run tests
-uv run itv-auth --help           # Test CLI
+uv run jeton --help              # Test CLI
 
 # Install globally
-pipx install .                   # From repo root
-pipx install ~/Repos/itv-google-auth  # From anywhere
+uv tool install .                # From repo root
+uv tool install ~/Repos/jeton   # From anywhere
 ```
 
 ## Testing
@@ -67,13 +69,13 @@ pipx install ~/Repos/itv-google-auth  # From anywhere
 Manual testing (requires credentials.json):
 ```bash
 # Test auto mode
-uv run itv-auth --scopes drive.readonly
+uv run jeton --scopes drive.readonly
 
 # Test manual mode
-uv run itv-auth --manual --scopes drive.readonly
+uv run jeton --manual --scopes drive.readonly
 
 # Test status
-uv run itv-auth status --token ./token.json
+uv run jeton status --token ./token.json
 ```
 
 ## Integration with Other Projects
@@ -81,7 +83,7 @@ uv run itv-auth status --token ./token.json
 ### Python Projects
 
 ```python
-from itv_google_auth import authenticate, load_credentials
+from jeton import authenticate, load_credentials
 
 creds = load_credentials("./token.json", "./credentials.json")
 if creds is None:
@@ -94,7 +96,7 @@ if creds is None:
    ```json
    {
      "scripts": {
-       "auth": "itv-auth --scopes drive script.projects"
+       "auth": "jeton --scopes drive script.projects"
      }
    }
    ```
@@ -107,9 +109,8 @@ if creds is None:
 
 ## Related Projects
 
-- **mcp-google-workspace**: Primary Python consumer (MCP tools for Claude)
-- **itv-appscript-deploy**: Apps Script deployment CLI (uses this library directly)
-- **itv-slides-formatter**: Apps Script project (uses itv-appscript-deploy for auth/deploy)
+- **mise-en-space**: Primary Python consumer (Google Workspace MCP for Claude)
+- Other Batterie de Savoir tools that need Google API access
 
 ## Security
 

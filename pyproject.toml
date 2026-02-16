@@ -1,7 +1,7 @@
 [project]
-name = "itv-google-auth"
-version = "0.1.0"
-description = "Shared Google OAuth library for ITV tooling"
+name = "jeton"
+version = "0.2.0"
+description = "Google OAuth library for the Batterie de Savoir toolkit"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-itv-auth = "itv_google_auth.cli:main"
+jeton = "jeton.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,7 +25,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["itv_google_auth"]
+packages = ["jeton"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

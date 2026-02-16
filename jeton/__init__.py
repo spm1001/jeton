@@ -1,8 +1,8 @@
 """
-ITV Google Auth - Shared OAuth library for ITV tooling.
+Jeton — Google OAuth library for Batterie de Savoir.
 
 Usage:
-    from itv_google_auth import authenticate, load_credentials, TokenStatus
+    from jeton import authenticate, load_credentials, TokenStatus
 
     # Load existing credentials (returns None if invalid/missing)
     creds = load_credentials("./token.json", "./credentials.json", scopes)
@@ -15,7 +15,7 @@ Usage:
     status = TokenStatus.check("./token.json")
 """
 
-from itv_google_auth.auth import (
+from jeton.auth import (
     authenticate,
     load_credentials,
     TokenStatus,
@@ -31,4 +31,4 @@ __all__ = [
     "SCOPE_SHORTCUTS",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

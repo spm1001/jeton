@@ -1,6 +1,6 @@
-# itv-google-auth
+# Jeton
 
-Shared Google OAuth library for ITV tooling. Provides a consistent authentication pattern across Python and Node.js projects.
+Google OAuth library for [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir). Provides a consistent authentication pattern across Python and Node.js projects.
 
 ## Installation
 

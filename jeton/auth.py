@@ -25,7 +25,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
-from itv_google_auth.callback import ERROR_HTML, NO_CODE_HTML, POST_AUTH_HTML, SUCCESS_HTML
+from jeton.callback import ERROR_HTML, NO_CODE_HTML, POST_AUTH_HTML, SUCCESS_HTML
 
 # Scope shortcuts for convenience
 SCOPE_SHORTCUTS = {
