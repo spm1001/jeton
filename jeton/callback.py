@@ -1,12 +1,11 @@
-"""HTML templates for OAuth callback pages with ITV branding."""
+"""HTML templates for OAuth callback pages."""
 
-# ITV Brand color tokens (from itv-brand skill)
-_ITV_BRAND_CSS = """
+_JETON_CSS = """
     :root {
-        --itv-dark-bg: #0F2323;
-        --itv-yellow: #E8E557;
-        --itv-teal: #4ECDC4;
-        --itv-teal-light: #7EE8E0;
+        --jeton-dark: #0F2323;
+        --jeton-accent: #E8E557;
+        --jeton-primary: #4ECDC4;
+        --jeton-primary-light: #7EE8E0;
         --white: #FFFFFF;
         --white-60: rgba(255,255,255,0.6);
         --white-40: rgba(255,255,255,0.4);
@@ -18,7 +17,7 @@ _ITV_BRAND_CSS = """
         text-align: center;
         padding: 50px 20px;
         margin: 0;
-        background: var(--itv-dark-bg);
+        background: var(--jeton-dark);
         min-height: 100vh;
     }
     .container {
@@ -45,10 +44,10 @@ _ITV_BRAND_CSS = """
         fill: none;
     }
     .icon-success {
-        background: var(--itv-teal);
+        background: var(--jeton-primary);
     }
     .icon-success svg {
-        stroke: var(--itv-dark-bg);
+        stroke: var(--jeton-dark);
     }
     .icon-error {
         background: rgba(255,107,107,0.15);
@@ -62,7 +61,7 @@ _ITV_BRAND_CSS = """
         font-weight: 700;
         margin: 0 0 16px 0;
     }
-    .success h1 { color: var(--itv-yellow); }
+    .success h1 { color: var(--jeton-accent); }
     .error h1 { color: var(--error-red); }
     p {
         color: var(--white-60);
@@ -87,7 +86,7 @@ SUCCESS_HTML = """
 <head>
     <meta charset="UTF-8">
     <title>Authorization Successful</title>
-    <style>""" + _ITV_BRAND_CSS + """
+    <style>""" + _JETON_CSS + """
     </style>
 </head>
 <body>
@@ -110,7 +109,7 @@ ERROR_HTML = """
 <head>
     <meta charset="UTF-8">
     <title>Authorization Failed</title>
-    <style>""" + _ITV_BRAND_CSS + """
+    <style>""" + _JETON_CSS + """
     </style>
 </head>
 <body>
@@ -135,7 +134,7 @@ NO_CODE_HTML = """
 <head>
     <meta charset="UTF-8">
     <title>No Authorization Code</title>
-    <style>""" + _ITV_BRAND_CSS + """
+    <style>""" + _JETON_CSS + """
     </style>
 </head>
 <body>
@@ -163,10 +162,10 @@ POST_AUTH_HTML = """
     <title>Authorization Successful</title>
     <style>
     :root {{
-        --itv-dark-bg: #0F2323;
-        --itv-yellow: #E8E557;
-        --itv-teal: #4ECDC4;
-        --itv-teal-light: #7EE8E0;
+        --jeton-dark: #0F2323;
+        --jeton-accent: #E8E557;
+        --jeton-primary: #4ECDC4;
+        --jeton-primary-light: #7EE8E0;
         --white: #FFFFFF;
         --white-60: rgba(255,255,255,0.6);
         --white-40: rgba(255,255,255,0.4);
@@ -177,7 +176,7 @@ POST_AUTH_HTML = """
         text-align: center;
         padding: 50px 20px;
         margin: 0;
-        background: var(--itv-dark-bg);
+        background: var(--jeton-dark);
         min-height: 100vh;
     }}
     .container {{
@@ -191,7 +190,7 @@ POST_AUTH_HTML = """
     .icon {{
         width: 64px;
         height: 64px;
-        background: var(--itv-teal);
+        background: var(--jeton-primary);
         border-radius: 50%;
         display: flex;
         align-items: center;
@@ -201,12 +200,12 @@ POST_AUTH_HTML = """
     .icon svg {{
         width: 32px;
         height: 32px;
-        stroke: var(--itv-dark-bg);
+        stroke: var(--jeton-dark);
         stroke-width: 3;
         fill: none;
     }}
     h1 {{
-        color: var(--itv-yellow);
+        color: var(--jeton-accent);
         font-size: 28px;
         font-weight: 700;
         margin: 0 0 16px 0;
@@ -235,7 +234,7 @@ POST_AUTH_HTML = """
         font-family: 'SF Mono', Monaco, 'Courier New', monospace;
         font-size: 20px;
         font-weight: 600;
-        color: var(--itv-teal);
+        color: var(--jeton-primary);
         background: rgba(78,205,196,0.1);
         padding: 12px 16px;
         border-radius: 4px;
@@ -247,7 +246,7 @@ POST_AUTH_HTML = """
     }}
     .copy-value:hover {{
         background: rgba(78,205,196,0.2);
-        border-color: var(--itv-teal);
+        border-color: var(--jeton-primary);
     }}
     .copy-hint {{
         font-size: 12px;
@@ -261,8 +260,8 @@ POST_AUTH_HTML = """
     }}
     .button {{
         display: inline-block;
-        background: var(--itv-teal);
-        color: var(--itv-dark-bg);
+        background: var(--jeton-primary);
+        color: var(--jeton-dark);
         padding: 14px 28px;
         border-radius: 6px;
         text-decoration: none;
@@ -272,10 +271,10 @@ POST_AUTH_HTML = """
         transition: all 0.2s;
     }}
     .button:hover {{
-        background: var(--itv-teal-light);
+        background: var(--jeton-primary-light);
     }}
     .copied {{
-        color: var(--itv-yellow);
+        color: var(--jeton-accent);
         font-size: 14px;
         margin-top: 8px;
         opacity: 0;

@@ -3,6 +3,7 @@ name = "jeton"
 version = "0.2.0"
 description = "Google OAuth library for the Batterie de Savoir toolkit"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "google-auth>=2.0.0",
@@ -10,6 +11,10 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "click>=8.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/spm1001/jeton"
+Repository = "https://github.com/spm1001/jeton"
 
 [project.scripts]
 jeton = "jeton.cli:main"
