@@ -1,37 +1,71 @@
 # Jeton
 
-Google OAuth library for [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir). Provides a consistent authentication pattern across Python and Node.js projects.
+Google OAuth token management for [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir) and any Python project that needs Google API access. Handles the full OAuth 2.0 flow — browser-based, manual (SSH/remote), or non-interactive (scripting/Claude Code) — and manages token refresh automatically.
 
 ## Installation
 
 ```bash
-# Install globally with pipx
-pipx install ~/Repos/jeton
+# From GitHub
+uv pip install git+https://github.com/spm1001/jeton.git
 
-# Or for development
-cd ~/Repos/jeton
+# Or clone for development
+git clone https://github.com/spm1001/jeton.git
+cd jeton
 uv sync
 ```
 
-## CLI Usage
+As a dependency in your `pyproject.toml`:
+
+```toml
+[project]
+dependencies = ["jeton"]
+
+[tool.uv.sources]
+jeton = { git = "https://github.com/spm1001/jeton.git" }
+```
+
+## Prerequisites: Google Cloud Setup
+
+Before using jeton, you need OAuth client credentials from a Google Cloud project.
+
+1. **Create or select a GCP project** at [console.cloud.google.com](https://console.cloud.google.com)
+
+2. **Enable the APIs** you need. Common ones:
+   - Google Drive API
+   - Gmail API
+   - Google Docs API
+   - Google Sheets API
+   - Google Slides API
+   - Google Calendar API
+
+3. **Configure the OAuth consent screen** ([APIs & Services > OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent)):
+   - User type: External (or Internal if using Google Workspace)
+   - Add the scopes your application needs
+   - Add test users if the app is in "Testing" mode
+
+4. **Create OAuth credentials** ([APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials)):
+   - Click "Create Credentials" > "OAuth client ID"
+   - Application type: **Web application**
+   - Add `http://localhost:3000/oauth/callback` to "Authorized redirect URIs"
+   - Download the JSON file and save it as `credentials.json`
+
+## Usage
 
 ### Authenticate
 
 ```bash
-# Basic auth with scopes
-jeton --scopes drive.readonly gmail.readonly
+# Auto mode — opens browser, handles callback automatically
+jeton --credentials ./credentials.json --scopes drive.readonly gmail.readonly
 
-# With explicit paths
-jeton --credentials ./credentials.json --token ./token.json --scopes drive sheets
-
-# Manual mode (for SSH/remote)
+# Manual mode — prints URL, you paste the redirect URL back
+# Use this for SSH, remote servers, or Claude Code
 jeton --manual --scopes drive.readonly
 
-# Non-interactive (for scripting/Claude Code)
+# Non-interactive — provide the auth code directly
 jeton --manual --code "http://localhost:3000/oauth/callback?code=4/xxx" --scopes drive
 ```
 
-### Check Status
+### Check Token Status
 
 ```bash
 jeton status
@@ -44,7 +78,7 @@ jeton status --token ./token.json
 jeton refresh --token ./token.json
 ```
 
-### List Scope Shortcuts
+### List Available Scopes
 
 ```bash
 jeton list-scopes
@@ -75,9 +109,17 @@ status = TokenStatus.check("./token.json")
 print(f"Valid: {status.valid}, Expires in: {status.expires_in}")
 ```
 
+## Authentication Modes
+
+| Mode | Flag | Use case |
+|------|------|----------|
+| **Auto** (default) | — | Local development. Starts localhost server, opens browser. |
+| **Manual** | `--manual` | SSH, remote, headless. Prints URL, you paste the redirect back. |
+| **Non-interactive** | `--manual --code URL` | Scripting, CI, Claude Code. Provide the code directly. |
+
 ## Scope Shortcuts
 
-Instead of full URLs, use shortcuts:
+Instead of full Google OAuth URLs, use shortcuts:
 
 | Shortcut | Full Scope |
 |----------|------------|
@@ -88,93 +130,52 @@ Instead of full URLs, use shortcuts:
 | `slides` | `https://www.googleapis.com/auth/presentations` |
 | `docs` | `https://www.googleapis.com/auth/documents` |
 | `calendar` | `https://www.googleapis.com/auth/calendar` |
+| `contacts.readonly` | `https://www.googleapis.com/auth/contacts.readonly` |
 | `script.projects` | `https://www.googleapis.com/auth/script.projects` |
 
 Run `jeton list-scopes` for the full list.
 
 ## Node.js Usage
 
-Node.js projects don't use the library directly. Instead:
+Node.js projects use jeton as a CLI tool to generate `token.json`, then read the token directly:
 
-1. Run `jeton` to create `token.json`
-2. Read the token in your Node.js code:
+```bash
+jeton --scopes drive script.projects
+```
 
 ```javascript
 const fs = require('fs');
 const { google } = require('googleapis');
 
-function getAuth() {
-  const tokenPath = './token.json';
-  const credsPath = './credentials.json';
+const credentials = JSON.parse(fs.readFileSync('./credentials.json'));
+const token = JSON.parse(fs.readFileSync('./token.json'));
 
-  if (!fs.existsSync(tokenPath)) {
-    console.error('No token.json - run: jeton --scopes drive script.projects');
-    process.exit(1);
-  }
+const auth = new google.auth.OAuth2(
+  credentials.web.client_id,
+  credentials.web.client_secret
+);
+auth.setCredentials(token);
 
-  const credentials = JSON.parse(fs.readFileSync(credsPath));
-  const { client_id, client_secret } = credentials.web;
-  const token = JSON.parse(fs.readFileSync(tokenPath));
-
-  const auth = new google.auth.OAuth2(client_id, client_secret);
-  auth.setCredentials(token);
-
-  // Auto-save refreshed tokens
-  auth.on('tokens', (newTokens) => {
-    const updated = { ...token, ...newTokens };
-    fs.writeFileSync(tokenPath, JSON.stringify(updated, null, 2));
-  });
-
-  return auth;
-}
+// Auto-save refreshed tokens
+auth.on('tokens', (newTokens) => {
+  const updated = { ...token, ...newTokens };
+  fs.writeFileSync('./token.json', JSON.stringify(updated, null, 2));
+});
 ```
 
-## Authentication Modes
+## Troubleshooting
 
-### Auto Mode (Default)
+| Problem | Fix |
+|---------|-----|
+| `redirect_uri_mismatch` | Add `http://localhost:3000/oauth/callback` to your OAuth client's redirect URIs in GCP Console |
+| `access_denied` | Check that your email is listed as a test user on the OAuth consent screen |
+| `API not enabled` | Enable the required API in [APIs & Services > Library](https://console.cloud.google.com/apis/library) |
+| Token expired, no refresh | Re-run `jeton --scopes ...` to get a new token with a refresh token |
 
-Starts a localhost server, opens browser automatically. Best for local development.
+## About the Name
 
-```bash
-jeton --scopes drive
-```
-
-### Manual Mode
-
-Prints URL, you paste the redirect URL back. For SSH/remote environments.
-
-```bash
-jeton --manual --scopes drive
-```
-
-### Non-Interactive Mode
-
-For scripting and Claude Code integration. The `--code` flag accepts either the full redirect URL or just the authorization code.
-
-```bash
-# Get the auth URL first
-jeton --manual --scopes drive
-# (copy URL, authorize in browser, copy failed redirect URL)
-
-# Then complete with code
-jeton --manual --code "http://localhost:3000/oauth/callback?code=4/xxx" --scopes drive
-```
-
-## Setup
-
-1. Create OAuth credentials in GCP Console:
-   - Go to https://console.cloud.google.com/apis/credentials
-   - Create OAuth 2.0 Client ID (Web Application type)
-   - Add `http://localhost:3000/oauth/callback` to authorized redirect URIs
-   - Download as `credentials.json`
-
-2. Enable required APIs in your GCP project
-
-3. Run authentication:
-   ```bash
-   jeton --credentials ./credentials.json --scopes drive
-   ```
+In a professional kitchen, a *jeton* is a token exchanged between front-of-house and kitchen to track orders. Jeton manages the tokens exchanged between your application (front-of-house) and Google's APIs (the kitchen). It's part of [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir), a suite of knowledge-work tools that follow a culinary naming convention.
 
 ## License
 
-MIT License.
+[MIT](LICENSE)
