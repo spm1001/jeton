@@ -3,13 +3,10 @@ credentials.json
 token.json
 
 # Environment
-.env
 .env.*
 *.env
 
 # Python
-__pycache__/
-*.py[cod]
 *$py.class
 *.so
 .Python
@@ -34,12 +31,6 @@ wheels/
 venv/
 ENV/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
 
 # Testing
 .pytest_cache/
