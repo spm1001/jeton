@@ -4,124 +4,64 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Purpose
 
-Jeton is the Google OAuth library for [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir) — a kitchen-metaphor toolkit for knowledge work. Jeton handles the tokens exchanged between front-of-house (the user) and kitchen (Google APIs).
+Jeton is the Google OAuth library for [Batterie de Savoir](https://github.com/spm1001/batterie-de-savoir). Two functions, three auth modes, auto-refresh. Exists because `InstalledAppFlow.run_local_server()` has no SSH/remote or non-interactive mode.
 
-Provides consistent authentication across:
-- Python projects (direct API use, e.g., mise-en-space)
-- Node.js/Apps Script projects (via CLI → token.json)
+Consumers: mise-en-space, itv-appscript-deploy.
 
 ## Architecture
 
 ```
 jeton/
-├── __init__.py     # Public API exports
-├── auth.py         # Core: authenticate(), load_credentials(), TokenStatus
-├── callback.py     # HTML templates for OAuth callback pages
-└── cli.py          # Click CLI: jeton command
+├── __init__.py     # Public API: authenticate, load_credentials
+└── auth.py         # Everything: flows, callback server, token I/O
 ```
+
+That's it. ~430 lines total.
 
 ## Key Design Decisions
 
-### Explicit Paths Over Defaults
+### Two Functions, Full URLs
 
-Each project provides its own:
-- `credentials.json` (from its own GCP project)
-- `token.json` (output location)
-- Scopes (only what that project needs)
+Public API is `authenticate()` and `load_credentials()`. Consumers pass full scope URLs — no shortcut expansion.
 
-No magic defaults like `~/.config/jeton/`. Keeps projects independent.
+### Three Auth Modes
 
-### Scope Shortcuts
+1. **Auto** (default): localhost callback server + `webbrowser.open()`
+2. **Manual**: print URL, user pastes redirect URL (for SSH/remote)
+3. **Non-interactive**: pass `code=` argument (for Claude Code/scripts)
 
-Full URLs are verbose. Shortcuts like `drive.readonly` expand to full URLs:
-```python
-SCOPE_SHORTCUTS = {
-    "drive.readonly": "https://www.googleapis.com/auth/drive.readonly",
-    ...
-}
-```
+### post_auth Screen
 
-### Dual-Mode Authentication
-
-1. **Auto mode**: Localhost server at port 3000, auto-opens browser
-2. **Manual mode**: Print URL, user pastes redirect URL back (for SSH)
-3. **Non-interactive**: `--code` flag for scripting/Claude Code
+`authenticate(..., post_auth={...})` shows a follow-up action on the callback page (auto mode) or in the terminal (manual mode). Used by itv-appscript-deploy to display the GCP project number for copy-paste.
 
 ### Scope Mismatch Handling
 
-Google sometimes grants different scopes than requested (incremental auth). The `_exchange_code()` function catches `ValueError: Scope has changed` and extracts tokens manually from the OAuth session.
+Google sometimes grants different scopes than requested. `_exchange_code()` catches `ValueError: Scope has changed` and extracts tokens from the OAuth session manually instead of crashing.
+
+### Explicit Paths
+
+Each consumer provides its own `credentials.json`, `token.json`, and scopes. No magic defaults.
 
 ## Commands
 
 ```bash
-# Development
-uv sync                          # Install dependencies
-uv run pytest                    # Run tests
-uv run jeton --help              # Test CLI
-
-# Install globally
-uv tool install .                # From repo root
-uv tool install ~/Repos/jeton   # From anywhere
+uv sync              # Install dependencies
+uv run pytest        # Run tests (8 tests)
 ```
 
-## Testing
-
-Manual testing (requires credentials.json):
-```bash
-# Test auto mode
-uv run jeton --scopes drive.readonly
-
-# Test manual mode
-uv run jeton --manual --scopes drive.readonly
-
-# Test status
-uv run jeton status --token ./token.json
-```
-
-## Integration with Other Projects
-
-### Python Projects
+## Integration Pattern
 
 ```python
 from jeton import authenticate, load_credentials
 
-creds = load_credentials("./token.json", "./credentials.json")
+creds = load_credentials("./token.json")
 if creds is None:
-    creds = authenticate("./credentials.json", "./token.json", ["drive.readonly"])
+    creds = authenticate(
+        "./credentials.json", "./token.json",
+        ["https://www.googleapis.com/auth/drive"],
+    )
 ```
-
-### Node.js Projects
-
-1. Add to `package.json`:
-   ```json
-   {
-     "scripts": {
-       "auth": "jeton --scopes drive script.projects"
-     }
-   }
-   ```
-
-2. Read token in code:
-   ```javascript
-   const token = JSON.parse(fs.readFileSync('./token.json'));
-   auth.setCredentials(token);
-   ```
-
-## Related Projects
-
-- **mise-en-space**: Primary Python consumer (Google Workspace MCP for Claude)
-- Other Batterie de Savoir tools that need Google API access
 
 ## Security
 
-**Never commit:**
-- `credentials.json` - OAuth client secrets
-- `token.json` - Access/refresh tokens
-- `.env` - Any environment secrets
-
-Required `.gitignore`:
-```
-credentials.json
-token.json
-*.env*
-```
+**Never commit** `token.json` — it contains access/refresh tokens. `credentials.json` (OAuth client config) is safe to commit — it identifies the app, not the user.
