@@ -1,10 +1,10 @@
 """
-Google OAuth with dual-mode support.
+Google OAuth with three-mode support.
 
 Modes:
 1. Auto (default): localhost server, auto-opens browser
 2. Manual (--manual): paste redirect URL
-3. Non-interactive (--manual --code URL): for scripting/Claude Code
+3. Non-interactive (--code URL): for scripting/Claude Code
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import os
 import sys
 import time
 import webbrowser
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -24,135 +23,6 @@ from urllib.parse import parse_qs, urlparse
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-
-from jeton.callback import ERROR_HTML, NO_CODE_HTML, POST_AUTH_HTML, SUCCESS_HTML
-
-# Scope shortcuts for convenience
-SCOPE_SHORTCUTS = {
-    # Drive
-    "drive": "https://www.googleapis.com/auth/drive",
-    "drive.readonly": "https://www.googleapis.com/auth/drive.readonly",
-    "drive.file": "https://www.googleapis.com/auth/drive.file",
-    # Gmail
-    "gmail": "https://www.googleapis.com/auth/gmail.modify",
-    "gmail.readonly": "https://www.googleapis.com/auth/gmail.readonly",
-    "gmail.send": "https://www.googleapis.com/auth/gmail.send",
-    # Sheets, Slides, Docs
-    "sheets": "https://www.googleapis.com/auth/spreadsheets",
-    "sheets.readonly": "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "slides": "https://www.googleapis.com/auth/presentations",
-    "slides.readonly": "https://www.googleapis.com/auth/presentations.readonly",
-    "docs": "https://www.googleapis.com/auth/documents",
-    "docs.readonly": "https://www.googleapis.com/auth/documents.readonly",
-    # Calendar
-    "calendar": "https://www.googleapis.com/auth/calendar",
-    "calendar.readonly": "https://www.googleapis.com/auth/calendar.readonly",
-    # Contacts & Directory
-    "contacts.readonly": "https://www.googleapis.com/auth/contacts.readonly",
-    "directory.readonly": "https://www.googleapis.com/auth/directory.readonly",
-    "admin.directory.user.readonly": "https://www.googleapis.com/auth/admin.directory.user.readonly",
-    # Apps Script
-    "script.projects": "https://www.googleapis.com/auth/script.projects",
-    "script.deployments": "https://www.googleapis.com/auth/script.deployments",
-    # Logging
-    "logging.read": "https://www.googleapis.com/auth/logging.read",
-}
-
-
-def expand_scopes(scopes: list[str]) -> list[str]:
-    """Expand scope shortcuts to full URLs.
-
-    Args:
-        scopes: List of scope shortcuts (e.g., 'drive.readonly') or full URLs
-
-    Returns:
-        List of full scope URLs
-    """
-    return [SCOPE_SHORTCUTS.get(s, s) for s in scopes]
-
-
-@dataclass
-class TokenStatus:
-    """Status of an OAuth token."""
-
-    valid: bool
-    exists: bool
-    expired: bool
-    can_refresh: bool
-    expires_at: datetime | None
-    scopes: list[str]
-    error: str | None = None
-
-    @property
-    def expires_in(self) -> timedelta | None:
-        """Time until token expires, or None if unknown/expired."""
-        if self.expires_at is None:
-            return None
-        delta = self.expires_at - datetime.now(timezone.utc)
-        return delta if delta.total_seconds() > 0 else None
-
-    @classmethod
-    def check(cls, token_path: str | Path) -> TokenStatus:
-        """Check the status of a token file without loading credentials.
-
-        Args:
-            token_path: Path to token.json file
-
-        Returns:
-            TokenStatus with details about the token
-        """
-        token_path = Path(token_path)
-
-        if not token_path.exists():
-            return cls(
-                valid=False,
-                exists=False,
-                expired=False,
-                can_refresh=False,
-                expires_at=None,
-                scopes=[],
-                error="Token file not found"
-            )
-
-        try:
-            token_data = json.loads(token_path.read_text())
-        except (json.JSONDecodeError, IOError) as e:
-            return cls(
-                valid=False,
-                exists=True,
-                expired=False,
-                can_refresh=False,
-                expires_at=None,
-                scopes=[],
-                error=f"Failed to read token file: {e}"
-            )
-
-        # Parse expiry
-        expires_at = None
-        if token_data.get("expiry"):
-            try:
-                expires_at = datetime.fromisoformat(token_data["expiry"].replace("Z", "+00:00"))
-                # Ensure timezone-aware (old tokens may be naive)
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                pass
-
-        expired = expires_at is not None and expires_at < datetime.now(timezone.utc)
-        can_refresh = bool(token_data.get("refresh_token"))
-        scopes = token_data.get("scopes", [])
-
-        # Token is valid if not expired, or if expired but can refresh
-        valid = (not expired) or can_refresh
-
-        return cls(
-            valid=valid,
-            exists=True,
-            expired=expired,
-            can_refresh=can_refresh,
-            expires_at=expires_at,
-            scopes=scopes,
-        )
 
 
 def load_credentials(
@@ -166,8 +36,8 @@ def load_credentials(
 
     Args:
         token_path: Path to token.json file
-        credentials_path: Path to credentials.json (needed for refresh)
-        scopes: Expected scopes (for validation, optional)
+        credentials_path: Path to credentials.json (unused, kept for API compat)
+        scopes: Expected scopes (unused, kept for API compat)
 
     Returns:
         Valid Credentials object, or None if token doesn't exist or is invalid
@@ -224,16 +94,16 @@ def authenticate(
     Args:
         credentials_path: Path to credentials.json from GCP Console
         token_path: Where to save the resulting token
-        scopes: List of scopes (can use shortcuts like 'drive.readonly')
+        scopes: List of full scope URLs
         manual_mode: If True, user pastes redirect URL instead of localhost server
         code: Pre-provided auth code or redirect URL (for non-interactive use)
         port: Port for localhost callback server (default 3000)
-        post_auth: Optional dict for post-auth action screen. Keys:
+        post_auth: Optional dict for post-auth info screen. Keys:
             - copy_value: Value to display for copying
-            - copy_label: Label for the copy value (e.g., "GCP Project Number")
+            - copy_label: Label for the copy value
             - message: Instructions to show the user
             - button_url: URL the button opens
-            - button_label: Button text (e.g., "Open Settings →")
+            - button_label: Button text
 
     Returns:
         Valid Credentials object
@@ -253,10 +123,7 @@ def authenticate(
             "https://console.cloud.google.com/apis/credentials"
         )
 
-    # Expand scope shortcuts
-    scopes = expand_scopes(scopes)
-
-    # Allow OAuth scope to change without raising error
+    # Relax scope matching — Google sometimes grants different scopes
     os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
     redirect_uri = f"http://localhost:{port}/oauth/callback"
@@ -296,65 +163,93 @@ def authenticate(
     return creds
 
 
+# ---------------------------------------------------------------------------
+# Callback HTML — minimal, functional
+# ---------------------------------------------------------------------------
+
+_SUCCESS_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>OK</title></head><body style="font-family:system-ui;text-align:center;padding:60px">
+<h1 style="color:#2e7d32">&#10003; Authorization Successful</h1>
+<p>You can close this tab.</p></body></html>"""
+
+_ERROR_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>Error</title></head><body style="font-family:system-ui;text-align:center;padding:60px">
+<h1 style="color:#c62828">&#10007; Authorization Failed</h1>
+<p><code>{error}</code></p></body></html>"""
+
+_POST_AUTH_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>OK</title></head><body style="font-family:system-ui;text-align:center;padding:60px">
+<h1 style="color:#2e7d32">&#10003; Authorization Successful</h1>
+<p style="margin:20px 0"><strong>{copy_label}:</strong>
+<code style="background:#f5f5f5;padding:4px 8px;font-size:18px;user-select:all">{copy_value}</code></p>
+<p>{message}</p>
+<p style="margin-top:20px"><a href="{button_url}" target="_blank">{button_label}</a></p>
+</body></html>"""
+
+
+# ---------------------------------------------------------------------------
+# Callback server
+# ---------------------------------------------------------------------------
+
 class _OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP handler for OAuth callback."""
 
     def log_message(self, format, *args):
-        """Suppress default logging."""
         pass
 
     def do_GET(self):
-        """Handle OAuth callback GET request."""
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
-        if parsed.path == "/oauth/callback":
-            code = params.get("code", [None])[0]
-            error = params.get("error", [None])[0]
-
-            if error:
-                self.send_response(400)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(ERROR_HTML.format(error=error).encode())
-                self.server.auth_code = None
-                self.server.auth_error = error
-                return
-
-            if code:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-
-                # Use post-auth page if configured, otherwise simple success
-                post_auth = getattr(self.server, "post_auth", None)
-                if post_auth:
-                    import html
-                    html_content = POST_AUTH_HTML.format(
-                        copy_value=html.escape(str(post_auth.get("copy_value", ""))),
-                        copy_label=html.escape(str(post_auth.get("copy_label", "Value"))),
-                        message=html.escape(str(post_auth.get("message", ""))),
-                        button_url=html.escape(str(post_auth.get("button_url", "#"))),
-                        button_label=html.escape(str(post_auth.get("button_label", "Continue"))),
-                    )
-                    self.wfile.write(html_content.encode())
-                else:
-                    self.wfile.write(SUCCESS_HTML.encode())
-
-                self.server.auth_code = code
-                return
-
-            self.send_response(400)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(NO_CODE_HTML.encode())
-            self.server.auth_code = None
-        else:
+        if parsed.path != "/oauth/callback":
             self.send_response(404)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Not Found")
+            return
 
+        error = params.get("error", [None])[0]
+        if error:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(_ERROR_HTML.format(error=error).encode())
+            self.server.auth_code = None
+            self.server.auth_error = error
+            return
+
+        code = params.get("code", [None])[0]
+        if not code:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(_ERROR_HTML.format(error="No authorization code received").encode())
+            self.server.auth_code = None
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+
+        post_auth = getattr(self.server, "post_auth", None)
+        if post_auth:
+            import html
+            self.wfile.write(_POST_AUTH_HTML.format(
+                copy_value=html.escape(str(post_auth.get("copy_value", ""))),
+                copy_label=html.escape(str(post_auth.get("copy_label", "Value"))),
+                message=html.escape(str(post_auth.get("message", ""))),
+                button_url=html.escape(str(post_auth.get("button_url", "#"))),
+                button_label=html.escape(str(post_auth.get("button_label", "Continue"))),
+            ).encode())
+        else:
+            self.wfile.write(_SUCCESS_HTML.encode())
+
+        self.server.auth_code = code
+
+
+# ---------------------------------------------------------------------------
+# Auth flows
+# ---------------------------------------------------------------------------
 
 def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
     """Auto server mode: localhost receives callback automatically."""
@@ -365,12 +260,11 @@ def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
     print(auth_url)
     print()
 
-    # Try to open browser
     try:
         webbrowser.open(auth_url)
         print("Browser opened automatically")
     except Exception:
-        print("Could not auto-open browser - please copy URL manually")
+        print("Could not auto-open browser — please copy URL manually")
     print()
 
     print(f"Starting OAuth server on http://localhost:{port}/oauth/callback")
@@ -389,7 +283,6 @@ def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
     thread = Thread(target=run_server, daemon=True)
     thread.start()
 
-    # Wait for code with timeout
     timeout = 300  # 5 minutes
     start = time.time()
     while server.auth_code is None and server.auth_error is None:
@@ -454,7 +347,6 @@ def _parse_code_from_input(input_str: str) -> str:
     """Extract authorization code from URL or raw code."""
     input_str = input_str.strip()
 
-    # Try to parse as full URL
     try:
         parsed = urlparse(input_str)
         params = parse_qs(parsed.query)
@@ -464,14 +356,13 @@ def _parse_code_from_input(input_str: str) -> str:
     except Exception:
         pass
 
-    # Return as-is (assume it's just the code)
     return input_str
 
 
 def _exchange_code(flow: Flow, code: str) -> Credentials:
     """Exchange authorization code for tokens.
 
-    Handles the "Scope has changed" error that can occur with incremental auth.
+    Handles the "Scope has changed" error from incremental authorization.
     """
     print()
     print("Exchanging authorization code for tokens...")
@@ -483,22 +374,19 @@ def _exchange_code(flow: Flow, code: str) -> Credentials:
         if "Scope has changed" not in str(e):
             raise
 
-        # Scope mismatch - extract tokens manually from session
-        # This happens when Google grants different scopes than requested
+        # Scope mismatch — extract tokens manually from session
         print("Google granted additional scopes (incremental authorization)")
         print("Proceeding with granted permissions...")
         print()
 
         token_data = flow.oauth2session.token
 
-        # Calculate expiry
         expiry = None
         if "expires_in" in token_data:
             expiry = datetime.utcnow() + timedelta(seconds=token_data["expires_in"])
         elif "expires_at" in token_data:
             expiry = datetime.utcfromtimestamp(token_data["expires_at"])
 
-        # Parse scopes
         scope_data = token_data.get("scope", "")
         if isinstance(scope_data, str):
             scopes = scope_data.split()
