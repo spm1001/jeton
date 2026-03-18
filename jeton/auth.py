@@ -1,10 +1,9 @@
 """
-Google OAuth with three-mode support.
+Google OAuth with two-mode support.
 
 Modes:
-1. Auto (default): localhost server, auto-opens browser
-2. Manual (--manual): paste redirect URL
-3. Non-interactive (--code URL): for scripting/Claude Code
+1. Auto (default): localhost callback server + auto-opens browser
+2. Code exchange (--code URL): for remote/SSH/scripting — pair with get_auth_url()
 """
 
 from __future__ import annotations
@@ -80,23 +79,86 @@ def load_credentials(
     return creds if creds.valid else None
 
 
+def get_auth_url(
+    credentials_path: str | Path,
+    token_path: str | Path,
+    scopes: list[str],
+    port: int = 3000,
+) -> str:
+    """Generate OAuth URL and save PKCE state for later code exchange.
+
+    Use this for remote/SSH flows where no browser is available locally.
+    The caller should display the URL, then later call authenticate(code=...)
+    to complete the exchange.
+
+    Args:
+        credentials_path: Path to credentials.json from GCP Console
+        token_path: Where token will eventually be saved (PKCE state goes next to it)
+        scopes: List of full scope URLs
+        port: Port baked into the redirect URI (default 3000)
+
+    Returns:
+        Authorization URL string
+
+    Raises:
+        FileNotFoundError: If credentials.json doesn't exist
+    """
+    credentials_path = Path(credentials_path)
+    token_path = Path(token_path)
+
+    if not credentials_path.exists():
+        raise FileNotFoundError(
+            f"Credentials file not found: {credentials_path}\n"
+            "Download OAuth client credentials from GCP Console:\n"
+            "https://console.cloud.google.com/apis/credentials"
+        )
+
+    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
+    redirect_uri = f"http://localhost:{port}/oauth/callback"
+    pkce_state_path = token_path.parent / ".pkce_state.json"
+
+    flow = Flow.from_client_secrets_file(
+        str(credentials_path),
+        scopes=scopes,
+        redirect_uri=redirect_uri,
+    )
+
+    auth_url, _state = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        include_granted_scopes="true",
+    )
+
+    # Save PKCE verifier so authenticate(code=...) can use it later
+    if hasattr(flow, "code_verifier") and flow.code_verifier:
+        pkce_state_path.write_text(json.dumps({
+            "code_verifier": flow.code_verifier,
+        }))
+
+    return auth_url
+
+
 def authenticate(
     credentials_path: str | Path,
     token_path: str | Path,
     scopes: list[str],
-    manual_mode: bool = False,
     code: str | None = None,
     port: int = 3000,
     post_auth: dict | None = None,
 ) -> Credentials:
     """Run OAuth flow and save resulting token.
 
+    Two modes:
+    - Auto (default): opens browser, starts localhost callback server
+    - Code exchange: pass code= with auth code or redirect URL
+      (pair with get_auth_url() for remote/SSH workflows)
+
     Args:
         credentials_path: Path to credentials.json from GCP Console
         token_path: Where to save the resulting token
         scopes: List of full scope URLs
-        manual_mode: If True, user pastes redirect URL instead of localhost server
-        code: Pre-provided auth code or redirect URL (for non-interactive use)
+        code: Auth code or redirect URL (for code exchange mode)
         port: Port for localhost callback server (default 3000)
         post_auth: Optional dict for post-auth info screen. Keys:
             - copy_value: Value to display for copying
@@ -127,8 +189,6 @@ def authenticate(
     os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
     redirect_uri = f"http://localhost:{port}/oauth/callback"
-
-    # PKCE state file — allows --code to work across separate invocations
     pkce_state_path = token_path.parent / ".pkce_state.json"
 
     flow = Flow.from_client_secrets_file(
@@ -137,21 +197,22 @@ def authenticate(
         redirect_uri=redirect_uri,
     )
 
-    if code and pkce_state_path.exists():
-        # Phase 2: --code provided with saved PKCE state — skip URL generation
-        try:
-            pkce_state = json.loads(pkce_state_path.read_text())
-            flow.code_verifier = pkce_state.get("code_verifier")
-        except (json.JSONDecodeError, IOError):
-            pass  # Fall through to normal flow
+    if code:
+        # Code exchange — load saved PKCE state if available
+        if pkce_state_path.exists():
+            try:
+                pkce_state = json.loads(pkce_state_path.read_text())
+                flow.code_verifier = pkce_state.get("code_verifier")
+            except (json.JSONDecodeError, IOError):
+                pass
 
         print("OAuth Authentication")
         print("=" * 50)
         print()
         auth_code = _parse_code_from_input(code)
     else:
-        # Phase 1: generate URL (and save PKCE state for potential --code reuse)
-        auth_url, _ = flow.authorization_url(
+        # Auto mode — generate URL, open browser, start callback server
+        auth_url, state = flow.authorization_url(
             access_type="offline",
             prompt="consent",
             include_granted_scopes="true",
@@ -167,10 +228,7 @@ def authenticate(
         print("=" * 50)
         print()
 
-        if manual_mode or code:
-            auth_code = _manual_flow(auth_url, code, post_auth)
-        else:
-            auth_code = _auto_flow(auth_url, port, post_auth)
+        auth_code = _auto_flow(auth_url, port, post_auth, expected_state=state)
 
     # Exchange code for tokens (with scope mismatch handling)
     creds = _exchange_code(flow, auth_code)
@@ -244,6 +302,24 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
             self.server.auth_error = error
             return
 
+        # Validate state parameter to prevent CSRF
+        expected_state = getattr(self.server, "expected_state", None)
+        if expected_state is not None:
+            callback_state = params.get("state", [None])[0]
+            if callback_state != expected_state:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    _ERROR_HTML.format(
+                        error="State mismatch — possible CSRF attack. "
+                        "Please restart authentication."
+                    ).encode()
+                )
+                self.server.auth_code = None
+                self.server.auth_error = "state_mismatch"
+                return
+
         code = params.get("code", [None])[0]
         if not code:
             self.send_response(400)
@@ -277,7 +353,12 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
 # Auth flows
 # ---------------------------------------------------------------------------
 
-def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
+def _auto_flow(
+    auth_url: str,
+    port: int,
+    post_auth: dict | None = None,
+    expected_state: str | None = None,
+) -> str:
     """Auto server mode: localhost receives callback automatically."""
     print("Auto Server Mode (Local Development)")
     print("=" * 50)
@@ -301,6 +382,7 @@ def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
     server.auth_code = None
     server.auth_error = None
     server.post_auth = post_auth
+    server.expected_state = expected_state
 
     def run_server():
         while server.auth_code is None and server.auth_error is None:
@@ -323,54 +405,18 @@ def _auto_flow(auth_url: str, port: int, post_auth: dict | None = None) -> str:
     return server.auth_code
 
 
-def _manual_flow(auth_url: str, code_arg: str | None = None, post_auth: dict | None = None) -> str:
-    """Manual mode: user copies redirect URL and pastes."""
-    print("Manual Code Mode (Remote/SSH Development)")
-    print("=" * 50)
-    print()
-    print("1. Copy this URL and open in your browser:")
-    print()
-    print(auth_url)
-    print()
-    print("2. Sign in and grant permissions")
-    print("3. You'll be redirected to localhost (connection will fail - that's OK!)")
-    print("4. Copy the ENTIRE failed redirect URL from your browser")
-    print("   Example: http://localhost:3000/oauth/callback?code=4/XXX&scope=...")
-    print("   Or just copy the code value: 4/XXX")
-
-    if code_arg:
-        print()
-        print("Using code from command-line argument")
-        code = _parse_code_from_input(code_arg)
-    else:
-        print("5. Paste below")
-        print()
-        try:
-            user_input = input("Paste the full redirect URL or just the code: ")
-            code = _parse_code_from_input(user_input.strip())
-        except (EOFError, KeyboardInterrupt):
-            print("\n\nAuthentication cancelled")
-            sys.exit(1)
-
-    if not code:
-        raise ValueError("Could not extract authorization code from input")
-
-    # Show post-auth info in terminal for manual mode
-    if post_auth:
-        print()
-        print("=" * 50)
-        print(f"{post_auth.get('copy_label', 'Value')}: {post_auth.get('copy_value', '')}")
-        print()
-        print(post_auth.get("message", ""))
-        print()
-        print(f"Open: {post_auth.get('button_url', '')}")
-        print("=" * 50)
-
+def _parse_code_from_input(input_str: str) -> str:
+    """Extract authorization code from URL or raw code."""
+    code, _ = _parse_code_and_state(input_str)
     return code
 
 
-def _parse_code_from_input(input_str: str) -> str:
-    """Extract authorization code from URL or raw code."""
+def _parse_code_and_state(input_str: str) -> tuple[str, str | None]:
+    """Extract authorization code and state from URL or raw code.
+
+    Returns:
+        (code, state) — state is None when input is a raw code (not a URL).
+    """
     input_str = input_str.strip()
 
     try:
@@ -378,11 +424,12 @@ def _parse_code_from_input(input_str: str) -> str:
         params = parse_qs(parsed.query)
         code = params.get("code", [None])[0]
         if code:
-            return code
+            state = params.get("state", [None])[0]
+            return code, state
     except Exception:
         pass
 
-    return input_str
+    return input_str, None
 
 
 def _exchange_code(flow: Flow, code: str) -> Credentials:
