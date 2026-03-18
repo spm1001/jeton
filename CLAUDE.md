@@ -11,7 +11,7 @@ Consumers: mise-en-space, itv-appscript-deploy.
 ## Architecture
 
 ```
-jeton/
+src/jeton/
 ├── __init__.py     # Public API: authenticate, load_credentials
 └── auth.py         # Everything: flows, callback server, token I/O
 ```
