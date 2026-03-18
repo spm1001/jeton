@@ -128,29 +128,55 @@ def authenticate(
 
     redirect_uri = f"http://localhost:{port}/oauth/callback"
 
+    # PKCE state file — allows --code to work across separate invocations
+    pkce_state_path = token_path.parent / ".pkce_state.json"
+
     flow = Flow.from_client_secrets_file(
         str(credentials_path),
         scopes=scopes,
         redirect_uri=redirect_uri,
     )
 
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-        include_granted_scopes="true",
-    )
+    if code and pkce_state_path.exists():
+        # Phase 2: --code provided with saved PKCE state — skip URL generation
+        try:
+            pkce_state = json.loads(pkce_state_path.read_text())
+            flow.code_verifier = pkce_state.get("code_verifier")
+        except (json.JSONDecodeError, IOError):
+            pass  # Fall through to normal flow
 
-    print("OAuth Authentication")
-    print("=" * 50)
-    print()
-
-    if manual_mode or code:
-        auth_code = _manual_flow(auth_url, code, post_auth)
+        print("OAuth Authentication")
+        print("=" * 50)
+        print()
+        auth_code = _parse_code_from_input(code)
     else:
-        auth_code = _auto_flow(auth_url, port, post_auth)
+        # Phase 1: generate URL (and save PKCE state for potential --code reuse)
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            prompt="consent",
+            include_granted_scopes="true",
+        )
+
+        # Save PKCE verifier so --code can work in a separate invocation
+        if hasattr(flow, "code_verifier") and flow.code_verifier:
+            pkce_state_path.write_text(json.dumps({
+                "code_verifier": flow.code_verifier,
+            }))
+
+        print("OAuth Authentication")
+        print("=" * 50)
+        print()
+
+        if manual_mode or code:
+            auth_code = _manual_flow(auth_url, code, post_auth)
+        else:
+            auth_code = _auto_flow(auth_url, port, post_auth)
 
     # Exchange code for tokens (with scope mismatch handling)
     creds = _exchange_code(flow, auth_code)
+
+    # Clean up PKCE state
+    pkce_state_path.unlink(missing_ok=True)
 
     # Save
     _save_credentials(creds, token_path)
