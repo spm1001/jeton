@@ -1,6 +1,6 @@
 [project]
 name = "jeton"
-version = "1.0.0"
+version = "1.2.0"
 description = "Google OAuth for Python — three-mode auth flow with auto-refresh"
 readme = "README.md"
 license = "MIT"
