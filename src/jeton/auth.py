@@ -1,9 +1,10 @@
 """
-Google OAuth with two-mode support.
+Google OAuth with automatic environment detection.
 
 Modes:
-1. Auto (default): localhost callback server + auto-opens browser
-2. Code exchange (--code URL): for remote/SSH/scripting — pair with get_auth_url()
+1. Auto (default on desktop): localhost callback server + auto-opens browser
+2. Headless (auto-detected): generates auth URL, saves PKCE state, raises HeadlessError
+3. Code exchange: pass code= to complete the flow started by either mode
 """
 
 from __future__ import annotations
@@ -22,6 +23,27 @@ from urllib.parse import parse_qs, urlparse
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+
+
+class HeadlessError(Exception):
+    """Raised when authenticate() detects a headless environment.
+
+    Contains the auth URL so the consumer can display it and instruct
+    the user to re-run with --code URL.
+    """
+
+    def __init__(self, url: str):
+        self.url = url
+        super().__init__(
+            f"No browser available. Open this URL, then re-run with --code:\n{url}"
+        )
+
+
+def _can_open_browser() -> bool:
+    """Check if a graphical environment is available for OAuth callback."""
+    if sys.platform == "darwin":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def load_credentials(
@@ -172,6 +194,7 @@ def authenticate(
 
     Raises:
         FileNotFoundError: If credentials.json doesn't exist
+        HeadlessError: If no browser available (url attribute has the auth URL)
         ValueError: If authentication fails
         TimeoutError: If auto mode times out waiting for callback
     """
@@ -211,7 +234,7 @@ def authenticate(
         print()
         auth_code = _parse_code_from_input(code)
     else:
-        # Auto mode — generate URL, open browser, start callback server
+        # Generate URL and PKCE state
         auth_url, state = flow.authorization_url(
             access_type="offline",
             prompt="consent",
@@ -223,6 +246,10 @@ def authenticate(
             pkce_state_path.write_text(json.dumps({
                 "code_verifier": flow.code_verifier,
             }))
+
+        # Headless detection — raise before trying to open browser/bind port
+        if not _can_open_browser():
+            raise HeadlessError(auth_url)
 
         print("OAuth Authentication")
         print("=" * 50)

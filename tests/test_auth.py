@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jeton.auth import (
+    HeadlessError,
+    _can_open_browser,
     _parse_code_and_state,
     _parse_code_from_input,
     _OAuthCallbackHandler,
@@ -314,3 +316,74 @@ def test_get_auth_url_missing_credentials(tmp_path):
             token_path=tmp_path / "token.json",
             scopes=["https://www.googleapis.com/auth/drive"],
         )
+
+
+# =============================================================================
+# _can_open_browser()
+# =============================================================================
+
+
+def test_can_open_browser_macos():
+    """macOS always has a browser."""
+    with patch("jeton.auth.sys") as mock_sys:
+        mock_sys.platform = "darwin"
+        assert _can_open_browser() is True
+
+
+def test_can_open_browser_linux_with_display():
+    """Linux with DISPLAY set has a browser."""
+    with patch("jeton.auth.sys") as mock_sys, \
+         patch.dict("os.environ", {"DISPLAY": ":0"}, clear=False):
+        mock_sys.platform = "linux"
+        assert _can_open_browser() is True
+
+
+def test_can_open_browser_linux_headless():
+    """Linux without DISPLAY or WAYLAND_DISPLAY is headless."""
+    with patch("jeton.auth.sys") as mock_sys, \
+         patch.dict("os.environ", {}, clear=True):
+        mock_sys.platform = "linux"
+        assert _can_open_browser() is False
+
+
+# =============================================================================
+# HeadlessError
+# =============================================================================
+
+
+def test_headless_error_has_url():
+    """HeadlessError should carry the auth URL."""
+    err = HeadlessError("https://accounts.google.com/o/oauth2/auth?...")
+    assert err.url == "https://accounts.google.com/o/oauth2/auth?..."
+    assert "accounts.google.com" in str(err)
+
+
+def test_authenticate_raises_headless_on_no_browser(tmp_path):
+    """authenticate() without code= should raise HeadlessError in headless env."""
+    from jeton import authenticate
+
+    creds_path = tmp_path / "credentials.json"
+    creds_path.write_text(json.dumps({
+        "installed": {
+            "client_id": "test-client-id.apps.googleusercontent.com",
+            "client_secret": "test-secret",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }))
+
+    with patch("jeton.auth._can_open_browser", return_value=False):
+        with pytest.raises(HeadlessError) as exc_info:
+            authenticate(
+                credentials_path=creds_path,
+                token_path=tmp_path / "token.json",
+                scopes=["https://www.googleapis.com/auth/drive"],
+            )
+        assert "accounts.google.com" in exc_info.value.url
+
+    # PKCE state should have been saved
+    pkce_path = tmp_path / ".pkce_state.json"
+    if pkce_path.exists():
+        pkce_data = json.loads(pkce_path.read_text())
+        assert "code_verifier" in pkce_data
