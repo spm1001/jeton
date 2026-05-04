@@ -93,6 +93,62 @@ def test_save_credentials_no_expiry(tmp_path):
     assert saved["expiry"] is None
 
 
+def test_save_credentials_preserves_unknown_keys(tmp_path):
+    """Unknown top-level keys (e.g. _identity) survive a refresh round-trip."""
+    from unittest.mock import MagicMock
+
+    token_path = tmp_path / "token.json"
+    token_path.write_text(json.dumps({
+        "token": "old_access_token",
+        "refresh_token": "refresh_token_456",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "client_id_789",
+        "client_secret": "client_secret_xyz",
+        "scopes": ["https://www.googleapis.com/auth/drive"],
+        "expiry": "2025-01-01T00:00:00",
+        "_identity": {"email": "user@example.com", "sub": "12345"},
+        "_audit": "labelled-by-mise",
+    }))
+
+    creds = MagicMock()
+    creds.token = "new_access_token"
+    creds.refresh_token = "refresh_token_456"
+    creds.token_uri = "https://oauth2.googleapis.com/token"
+    creds.client_id = "client_id_789"
+    creds.client_secret = "client_secret_xyz"
+    creds.scopes = ["https://www.googleapis.com/auth/drive"]
+    creds.expiry = datetime(2025, 12, 31, 23, 59, 59)
+
+    _save_credentials(creds, token_path)
+
+    saved = json.loads(token_path.read_text())
+    assert saved["token"] == "new_access_token"
+    assert saved["_identity"] == {"email": "user@example.com", "sub": "12345"}
+    assert saved["_audit"] == "labelled-by-mise"
+
+
+def test_save_credentials_handles_corrupt_existing_file(tmp_path):
+    """A corrupt existing token file should not block a refresh write."""
+    from unittest.mock import MagicMock
+
+    token_path = tmp_path / "token.json"
+    token_path.write_text("not valid json{{{")
+
+    creds = MagicMock()
+    creds.token = "new_access_token"
+    creds.refresh_token = "refresh_token_456"
+    creds.token_uri = "https://oauth2.googleapis.com/token"
+    creds.client_id = "client_id_789"
+    creds.client_secret = "client_secret_xyz"
+    creds.scopes = []
+    creds.expiry = None
+
+    _save_credentials(creds, token_path)
+
+    saved = json.loads(token_path.read_text())
+    assert saved["token"] == "new_access_token"
+
+
 def test_save_credentials_scopes_as_list(tmp_path):
     from unittest.mock import MagicMock
 

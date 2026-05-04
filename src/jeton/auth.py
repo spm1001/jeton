@@ -504,9 +504,34 @@ def _exchange_code(flow: Flow, code: str) -> Credentials:
         )
 
 
+_CANONICAL_TOKEN_FIELDS = {
+    "token",
+    "refresh_token",
+    "token_uri",
+    "client_id",
+    "client_secret",
+    "scopes",
+    "expiry",
+}
+
+
 def _save_credentials(creds: Credentials, token_path: Path):
-    """Save credentials to JSON file."""
-    token_data = {
+    """Save credentials to JSON file, preserving any non-canonical top-level keys.
+
+    Downstream consumers may stash extra metadata (e.g. an ``_identity`` cue, an
+    audit label) alongside the OAuth fields. Merging on write keeps that data
+    alive across the hourly refresh cycle.
+    """
+    token_data: dict = {}
+    if token_path.exists():
+        try:
+            existing = json.loads(token_path.read_text())
+            if isinstance(existing, dict):
+                token_data = existing
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    token_data.update({
         "token": creds.token,
         "refresh_token": creds.refresh_token,
         "token_uri": creds.token_uri,
@@ -514,5 +539,5 @@ def _save_credentials(creds: Credentials, token_path: Path):
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes) if creds.scopes else [],
         "expiry": creds.expiry.isoformat() if creds.expiry else None,
-    }
+    })
     token_path.write_text(json.dumps(token_data, indent=2))

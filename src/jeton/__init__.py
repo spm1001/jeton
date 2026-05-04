@@ -13,4 +13,4 @@ One exception:
 from jeton.auth import HeadlessError, authenticate, get_auth_url, load_credentials
 
 __all__ = ["HeadlessError", "authenticate", "get_auth_url", "load_credentials"]
-__version__ = "1.2.0"
+__version__ = "1.3.0"
