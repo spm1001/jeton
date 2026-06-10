@@ -15,6 +15,13 @@ dependencies = ["jeton"]
 jeton = { git = "https://github.com/spm1001/jeton.git" }
 ```
 
+> **⚠️ The git pin is mandatory, not stylistic.** The `jeton` name on PyPI
+> belongs to someone else's empty placeholder (0.1.0, Nov 2025, unrelated).
+> A bare `pip install jeton`, `uv add jeton`, or `uvx --from jeton` resolves
+> to that package and fails later with `cannot import name 'authenticate'`.
+> Always install from the git URL:
+> `uvx --from 'jeton @ git+https://github.com/spm1001/jeton.git' …`
+
 ## Usage
 
 ```python

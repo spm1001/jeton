@@ -8,6 +8,10 @@ Jeton is the Google OAuth library for [Batterie de Savoir](https://github.com/sp
 
 Consumers: mise-en-space, itv-appscript-deploy.
 
+**Gotcha:** `jeton` on PyPI is an unrelated placeholder package — any install
+must pin the git URL (see README install block). A bare `jeton` dependency
+resolves to the wrong package and fails with `cannot import name 'authenticate'`.
+
 ## Architecture
 
 ```
