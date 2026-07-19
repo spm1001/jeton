@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.4.0] - 2026-07-19
+
+Concurrency-safe PKCE state (mise-zikesa: two concurrent auth flows clobbered
+each other's verifier, burning a consent click on "Invalid code verifier").
+
+### Changed
+- `.pkce_state.json` now keys verifiers by the OAuth `state` param — concurrent
+  flows merge instead of clobbering. Legacy single-verifier files still redeem.
+- Redeeming a flow consumes only its own entry; concurrent flows keep theirs
+  (previously the whole file was unlinked).
+- Redeem with no findable verifier now raises a clear ValueError BEFORE calling
+  Google (the single-use code survives for a retry), instead of silently
+  proceeding verifier-less into a guaranteed `invalid_grant`.
+- A bare code (no redirect URL) with several flows in flight is refused —
+  paste the full redirect URL, which carries the state.
+
+### Added
+- Mint-time self-check: the emitted URL's `code_challenge` is verified against
+  the verifier re-read from disk; mismatch aborts loudly instead of handing out
+  a doomed URL.
+- `authenticate(state=...)` — selects the right verifier when redeeming a bare
+  code while several flows are in flight (callback listeners know their state).
+- Advisory flock + atomic replace around state-file writes (POSIX; degrades to
+  atomic-replace-only elsewhere).
+
 ## [1.0.0] - 2026-03-18
 
 Batterie-wide consistency pass: src/ migration, CI.

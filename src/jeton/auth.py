@@ -9,11 +9,14 @@ Modes:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import sys
 import time
 import webbrowser
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -101,6 +104,193 @@ def load_credentials(
     return creds if creds.valid else None
 
 
+# ---------------------------------------------------------------------------
+# PKCE state persistence
+#
+# .pkce_state.json (next to the token file) holds the code_verifier for every
+# auth flow minted but not yet redeemed, KEYED BY THE OAUTH `state` PARAM.
+# Keying matters: the old single top-level code_verifier meant two concurrent
+# flows (e.g. two sessions re-authing at once) clobbered each other — the
+# second mint overwrote the first's verifier, so the first redeem failed with
+# "Invalid code verifier" AFTER the consent click was spent (mise-zikesa).
+# Now each flow owns its entry; redeem looks up by the state carried in the
+# redirect URL.
+# ---------------------------------------------------------------------------
+
+_PKCE_FLOW_TTL_S = 3600  # entries older than this are pruned at mint time
+
+
+def _pkce_challenge(verifier: str) -> str:
+    """Compute the S256 code challenge for a verifier (RFC 7636)."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _pkce_read(path: Path) -> dict:
+    """Read the PKCE state file tolerantly. Returns {} on missing/corrupt."""
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+@contextmanager
+def _pkce_lock(path: Path):
+    """Advisory lock for read-modify-write on the PKCE state file.
+
+    Sidecar .lock file + flock (POSIX). Without fcntl (Windows) it degrades
+    to a no-op: the atomic replace still prevents torn files, and keyed
+    entries make the worst case a clear refusal at redeem, never a silent
+    clobber.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _pkce_write(path: Path, data: dict) -> None:
+    """Atomic write (temp + replace) so a reader never sees a torn file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, path)
+
+
+def _pkce_persist(path: Path, state: str, verifier: str) -> None:
+    """Add this flow's verifier under its state key — merge, never clobber.
+
+    Prunes entries older than _PKCE_FLOW_TTL_S. A pre-upgrade top-level
+    code_verifier is preserved so an in-flight legacy flow can still redeem
+    after jeton upgrades mid-dance.
+    """
+    with _pkce_lock(path):
+        data = _pkce_read(path)
+        flows = data.get("flows")
+        if not isinstance(flows, dict):
+            flows = {}
+        now = time.time()
+        flows = {
+            k: v
+            for k, v in flows.items()
+            if isinstance(v, dict)
+            and now - v.get("created_at", 0) < _PKCE_FLOW_TTL_S
+        }
+        flows[state] = {"code_verifier": verifier, "created_at": now}
+        payload: dict = {"flows": flows}
+        if isinstance(data.get("code_verifier"), str):
+            payload["code_verifier"] = data["code_verifier"]
+        _pkce_write(path, payload)
+
+
+def _pkce_verify_minted(path: Path, state: str, auth_url: str) -> None:
+    """Mint-time self-check: the URL being handed out must match the verifier
+    that actually landed on disk (re-read, not the in-memory copy).
+
+    Catches silent write failures and same-instant clobbers. A doomed URL
+    burns a human consent click, so abort loudly instead (mise-zikesa).
+    """
+    params = parse_qs(urlparse(auth_url).query)
+    challenge = params.get("code_challenge", [None])[0]
+    if challenge is None:
+        return  # URL carries no PKCE — nothing to verify
+    method = params.get("code_challenge_method", ["S256"])[0]
+    entry = _pkce_read(path).get("flows", {}).get(state) or {}
+    persisted = entry.get("code_verifier")
+    expected = None
+    if persisted:
+        expected = _pkce_challenge(persisted) if method == "S256" else persisted
+    if expected != challenge:
+        raise RuntimeError(
+            "PKCE self-check failed: the auth URL's code_challenge does not "
+            "match the verifier persisted for its state. Handing out this URL "
+            "would burn a consent click — the redeem could only fail. Likely "
+            "causes: the state file write failed, or another process rewrote "
+            "it in the same instant. Re-run authentication."
+        )
+
+
+def _pkce_lookup(path: Path, state: str | None) -> tuple[str, str | None]:
+    """Find the verifier for a redeem. Returns (verifier, flow_key).
+
+    flow_key is the state the entry lives under, or None for the legacy
+    top-level verifier. With a state (full redirect URL pasted): exact keyed
+    lookup, legacy fallback. Without one (bare code): only safe when a single
+    flow is in flight — with several, refuse rather than guess, because a
+    wrong verifier burns the single-use code at Google's token endpoint.
+
+    Raises ValueError (before any Google call, so the code survives for a
+    retry) when no verifier can be found.
+    """
+    data = _pkce_read(path)
+    flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
+    legacy = data.get("code_verifier")
+    legacy = legacy if isinstance(legacy, str) else None
+
+    if state is not None:
+        entry = flows.get(state)
+        if isinstance(entry, dict) and entry.get("code_verifier"):
+            return entry["code_verifier"], state
+        if legacy:
+            return legacy, None
+        raise ValueError(
+            "No PKCE verifier found for this flow's state. Either the auth "
+            "URL was minted on a different machine (mint and redeem must "
+            "happen where the same token directory lives), or the state "
+            "expired/was cleaned up. Re-run authentication to mint a fresh "
+            "URL — this authorization code has NOT been spent."
+        )
+
+    live = {k: v for k, v in flows.items()
+            if isinstance(v, dict) and v.get("code_verifier")}
+    if len(live) == 1:
+        key, entry = next(iter(live.items()))
+        return entry["code_verifier"], key
+    if len(live) > 1:
+        raise ValueError(
+            f"{len(live)} auth flows are in flight and a bare code doesn't "
+            "say which one it belongs to. Paste the FULL redirect URL instead "
+            "(it carries the state parameter) — this authorization code has "
+            "NOT been spent."
+        )
+    if legacy:
+        return legacy, None
+    raise ValueError(
+        "No PKCE state found on this machine — the auth URL wasn't minted "
+        "here, or its state was cleaned up. Mint and redeem must happen on "
+        "the same machine (same token directory). Re-run authentication — "
+        "this authorization code has NOT been spent."
+    )
+
+
+def _pkce_consume(path: Path, flow_key: str | None) -> None:
+    """Remove the redeemed flow's entry, leaving concurrent flows intact.
+
+    flow_key None = the legacy top-level verifier. Deletes the file when
+    nothing remains (matching the old unlink behaviour).
+    """
+    with _pkce_lock(path):
+        data = _pkce_read(path)
+        flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
+        if flow_key is None:
+            data.pop("code_verifier", None)
+        else:
+            flows.pop(flow_key, None)
+        data["flows"] = flows
+        if not flows and not data.get("code_verifier"):
+            path.unlink(missing_ok=True)
+            return
+        _pkce_write(path, data)
+
+
 def get_auth_url(
     credentials_path: str | Path,
     token_path: str | Path,
@@ -146,17 +336,17 @@ def get_auth_url(
         redirect_uri=redirect_uri,
     )
 
-    auth_url, _state = flow.authorization_url(
+    auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
     )
 
-    # Save PKCE verifier so authenticate(code=...) can use it later
+    # Save PKCE verifier under this flow's state so authenticate(code=...)
+    # can use it later — merged, so concurrent flows don't clobber each other.
     if hasattr(flow, "code_verifier") and flow.code_verifier:
-        pkce_state_path.write_text(json.dumps({
-            "code_verifier": flow.code_verifier,
-        }))
+        _pkce_persist(pkce_state_path, state, flow.code_verifier)
+        _pkce_verify_minted(pkce_state_path, state, auth_url)
 
     return auth_url
 
@@ -168,6 +358,7 @@ def authenticate(
     code: str | None = None,
     port: int = 3000,
     post_auth: dict | None = None,
+    state: str | None = None,
 ) -> Credentials:
     """Run OAuth flow and save resulting token.
 
@@ -182,6 +373,10 @@ def authenticate(
         scopes: List of full scope URLs
         code: Auth code or redirect URL (for code exchange mode)
         port: Port for localhost callback server (default 3000)
+        state: OAuth state param for the flow `code` belongs to. Only needed
+            when `code` is a bare code (a full redirect URL carries state
+            itself) AND several flows may be in flight — it selects the
+            right PKCE verifier from the keyed state file.
         post_auth: Optional dict for post-auth info screen. Keys:
             - copy_value: Value to display for copying
             - copy_label: Label for the copy value
@@ -220,32 +415,36 @@ def authenticate(
         redirect_uri=redirect_uri,
     )
 
+    pkce_used = False
+    pkce_key: str | None = None
+
     if code:
-        # Code exchange — load saved PKCE state if available
-        if pkce_state_path.exists():
-            try:
-                pkce_state = json.loads(pkce_state_path.read_text())
-                flow.code_verifier = pkce_state.get("code_verifier")
-            except (json.JSONDecodeError, IOError):
-                pass
+        # Code exchange — look up the verifier for THIS flow (keyed by state
+        # from the redirect URL, or the explicit state= arg for bare codes).
+        auth_code, url_state = _parse_code_and_state(code)
+        flow_state = url_state or state
+        verifier, pkce_key = _pkce_lookup(pkce_state_path, flow_state)
+        flow.code_verifier = verifier
+        pkce_used = True
 
         print("OAuth Authentication")
         print("=" * 50)
         print()
-        auth_code = _parse_code_from_input(code)
     else:
         # Generate URL and PKCE state
-        auth_url, state = flow.authorization_url(
+        auth_url, mint_state = flow.authorization_url(
             access_type="offline",
             prompt="consent",
             include_granted_scopes="true",
         )
 
-        # Save PKCE verifier so --code can work in a separate invocation
+        # Save PKCE verifier so --code can work in a separate invocation —
+        # keyed by state, merged so concurrent flows don't clobber each other.
         if hasattr(flow, "code_verifier") and flow.code_verifier:
-            pkce_state_path.write_text(json.dumps({
-                "code_verifier": flow.code_verifier,
-            }))
+            _pkce_persist(pkce_state_path, mint_state, flow.code_verifier)
+            _pkce_verify_minted(pkce_state_path, mint_state, auth_url)
+            pkce_used = True
+            pkce_key = mint_state
 
         # Headless detection — raise before trying to open browser/bind port
         if not _can_open_browser():
@@ -255,13 +454,14 @@ def authenticate(
         print("=" * 50)
         print()
 
-        auth_code = _auto_flow(auth_url, port, post_auth, expected_state=state)
+        auth_code = _auto_flow(auth_url, port, post_auth, expected_state=mint_state)
 
     # Exchange code for tokens (with scope mismatch handling)
     creds = _exchange_code(flow, auth_code)
 
-    # Clean up PKCE state
-    pkce_state_path.unlink(missing_ok=True)
+    # Clean up THIS flow's PKCE entry — concurrent flows keep theirs
+    if pkce_used:
+        _pkce_consume(pkce_state_path, pkce_key)
 
     # Save
     _save_credentials(creds, token_path)

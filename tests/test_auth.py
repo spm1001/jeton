@@ -356,9 +356,11 @@ def test_get_auth_url_saves_pkce_state_when_available(tmp_path):
 
     pkce_path = tmp_path / ".pkce_state.json"
     if pkce_path.exists():
-        # If library generated PKCE, verify structure
+        # If library generated PKCE, verify keyed structure (1.4.0 schema)
         pkce_data = json.loads(pkce_path.read_text())
-        assert "code_verifier" in pkce_data
+        flows = pkce_data.get("flows", {})
+        assert flows, "expected at least one keyed flow entry"
+        assert all("code_verifier" in entry for entry in flows.values())
     # Not all google-auth-oauthlib versions generate PKCE — absence is OK
 
 
@@ -438,8 +440,208 @@ def test_authenticate_raises_headless_on_no_browser(tmp_path):
             )
         assert "accounts.google.com" in exc_info.value.url
 
-    # PKCE state should have been saved
+    # PKCE state should have been saved under the flow's state key, so the
+    # --code path still works after the HeadlessError (1.4.0 keyed schema)
     pkce_path = tmp_path / ".pkce_state.json"
     if pkce_path.exists():
         pkce_data = json.loads(pkce_path.read_text())
-        assert "code_verifier" in pkce_data
+        flows = pkce_data.get("flows", {})
+        assert flows, "expected at least one keyed flow entry"
+        assert all("code_verifier" in entry for entry in flows.values())
+
+
+# =============================================================================
+# PKCE keyed state — the two-flow race (mise-zikesa)
+# =============================================================================
+
+from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
+
+from jeton.auth import (
+    _pkce_challenge,
+    _pkce_consume,
+    _pkce_lookup,
+    _pkce_persist,
+    _pkce_read,
+    _pkce_verify_minted,
+    authenticate,
+    get_auth_url,
+)
+
+_CLIENT_CONFIG = {
+    "installed": {
+        "client_id": "test-client.apps.googleusercontent.com",
+        "client_secret": "test-secret",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": ["http://localhost"],
+    }
+}
+
+
+@pytest.fixture
+def creds_file(tmp_path):
+    p = tmp_path / "credentials.json"
+    p.write_text(json.dumps(_CLIENT_CONFIG))
+    return p
+
+
+@pytest.fixture
+def token_path(tmp_path):
+    return tmp_path / "token.json"
+
+
+def _url_param(url: str, name: str) -> str:
+    return _parse_qs(_urlparse(url).query)[name][0]
+
+
+def _fake_creds():
+    creds = MagicMock()
+    creds.token = "access-token"
+    creds.refresh_token = "refresh-token"
+    creds.token_uri = "https://oauth2.googleapis.com/token"
+    creds.client_id = "test-client"
+    creds.client_secret = "test-secret"
+    creds.scopes = ["scope-a"]
+    creds.expiry = None
+    return creds
+
+
+def test_two_mints_do_not_clobber(creds_file, token_path):
+    """The race that burned a consent click: mint B must not orphan URL A."""
+    url1 = get_auth_url(creds_file, token_path, ["scope-a"])
+    url2 = get_auth_url(creds_file, token_path, ["scope-a"])
+    state1, state2 = _url_param(url1, "state"), _url_param(url2, "state")
+
+    flows = _pkce_read(token_path.parent / ".pkce_state.json")["flows"]
+    assert set(flows) == {state1, state2}
+    # Each URL's challenge must match ITS OWN persisted verifier — url1's
+    # verifier surviving mint 2 is the whole point.
+    assert _pkce_challenge(flows[state1]["code_verifier"]) == _url_param(url1, "code_challenge")
+    assert _pkce_challenge(flows[state2]["code_verifier"]) == _url_param(url2, "code_challenge")
+
+
+def test_redeem_selects_by_state_and_leaves_sibling(creds_file, token_path):
+    url1 = get_auth_url(creds_file, token_path, ["scope-a"])
+    url2 = get_auth_url(creds_file, token_path, ["scope-a"])
+    state1, state2 = _url_param(url1, "state"), _url_param(url2, "state")
+    pkce_path = token_path.parent / ".pkce_state.json"
+    verifier1 = _pkce_read(pkce_path)["flows"][state1]["code_verifier"]
+
+    captured = {}
+
+    def fake_exchange(flow, code):
+        captured["verifier"] = flow.code_verifier
+        return _fake_creds()
+
+    with patch("jeton.auth._exchange_code", side_effect=fake_exchange):
+        authenticate(
+            creds_file, token_path, ["scope-a"],
+            code=f"http://localhost:3000/oauth/callback?code=4/abc&state={state1}",
+        )
+
+    assert captured["verifier"] == verifier1
+    flows_after = _pkce_read(pkce_path)["flows"]
+    assert state1 not in flows_after  # consumed
+    assert state2 in flows_after      # sibling intact
+
+
+def test_bare_code_with_two_flows_refuses(creds_file, token_path):
+    get_auth_url(creds_file, token_path, ["scope-a"])
+    get_auth_url(creds_file, token_path, ["scope-a"])
+    with patch("jeton.auth._exchange_code") as exchange:
+        with pytest.raises(ValueError, match="redirect URL"):
+            authenticate(creds_file, token_path, ["scope-a"], code="4/bare")
+    exchange.assert_not_called()  # refusal happens BEFORE Google — code survives
+
+
+def test_bare_code_single_flow_redeems_and_cleans_up(creds_file, token_path):
+    url = get_auth_url(creds_file, token_path, ["scope-a"])
+    pkce_path = token_path.parent / ".pkce_state.json"
+    verifier = _pkce_read(pkce_path)["flows"][_url_param(url, "state")]["code_verifier"]
+
+    captured = {}
+
+    def fake_exchange(flow, code):
+        captured["verifier"] = flow.code_verifier
+        return _fake_creds()
+
+    with patch("jeton.auth._exchange_code", side_effect=fake_exchange):
+        authenticate(creds_file, token_path, ["scope-a"], code="4/bare")
+
+    assert captured["verifier"] == verifier
+    assert not pkce_path.exists()  # last entry consumed -> file removed
+
+
+def test_state_arg_selects_among_flows_for_bare_code(creds_file, token_path):
+    get_auth_url(creds_file, token_path, ["scope-a"])
+    url2 = get_auth_url(creds_file, token_path, ["scope-a"])
+    state2 = _url_param(url2, "state")
+    pkce_path = token_path.parent / ".pkce_state.json"
+    verifier2 = _pkce_read(pkce_path)["flows"][state2]["code_verifier"]
+
+    captured = {}
+
+    def fake_exchange(flow, code):
+        captured["verifier"] = flow.code_verifier
+        return _fake_creds()
+
+    with patch("jeton.auth._exchange_code", side_effect=fake_exchange):
+        authenticate(creds_file, token_path, ["scope-a"], code="4/bare", state=state2)
+
+    assert captured["verifier"] == verifier2
+
+
+def test_legacy_single_verifier_still_redeems(creds_file, token_path):
+    pkce_path = token_path.parent / ".pkce_state.json"
+    pkce_path.write_text(json.dumps({"code_verifier": "legacy-verifier"}))
+
+    captured = {}
+
+    def fake_exchange(flow, code):
+        captured["verifier"] = flow.code_verifier
+        return _fake_creds()
+
+    with patch("jeton.auth._exchange_code", side_effect=fake_exchange):
+        authenticate(creds_file, token_path, ["scope-a"], code="4/bare")
+
+    assert captured["verifier"] == "legacy-verifier"
+    assert not pkce_path.exists()
+
+
+def test_unknown_state_raises_before_google(creds_file, token_path):
+    get_auth_url(creds_file, token_path, ["scope-a"])
+    with patch("jeton.auth._exchange_code") as exchange:
+        with pytest.raises(ValueError, match="No PKCE verifier"):
+            authenticate(
+                creds_file, token_path, ["scope-a"],
+                code="http://localhost:3000/oauth/callback?code=4/abc&state=NOSUCH",
+            )
+    exchange.assert_not_called()
+
+
+def test_no_state_file_raises_before_google(creds_file, token_path):
+    with patch("jeton.auth._exchange_code") as exchange:
+        with pytest.raises(ValueError, match="No PKCE state"):
+            authenticate(creds_file, token_path, ["scope-a"], code="4/bare")
+    exchange.assert_not_called()
+
+
+def test_verify_minted_catches_clobber(creds_file, token_path):
+    url = get_auth_url(creds_file, token_path, ["scope-a"])
+    state = _url_param(url, "state")
+    pkce_path = token_path.parent / ".pkce_state.json"
+    # Simulate a same-instant clobber: the persisted verifier no longer
+    # matches the URL about to be handed out.
+    _pkce_persist(pkce_path, state, "attacker-or-sibling-overwrote-this")
+    with pytest.raises(RuntimeError, match="PKCE self-check failed"):
+        _pkce_verify_minted(pkce_path, state, url)
+
+
+def test_mint_prunes_stale_entries(creds_file, token_path):
+    pkce_path = token_path.parent / ".pkce_state.json"
+    stale = {"flows": {"old-state": {"code_verifier": "v", "created_at": 1.0}}}
+    pkce_path.write_text(json.dumps(stale))
+    url = get_auth_url(creds_file, token_path, ["scope-a"])
+    flows = _pkce_read(pkce_path)["flows"]
+    assert "old-state" not in flows
+    assert _url_param(url, "state") in flows
