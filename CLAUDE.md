@@ -69,3 +69,5 @@ if creds is None:
 ## Security
 
 **Never commit** `token.json` — it contains access/refresh tokens. `credentials.json` (OAuth client config) is safe to commit — it identifies the app, not the user.
+
+Work is tracked on a bon board in `.bon/` — read `.bon/README.md` before reading or changing anything there.
